@@ -37,12 +37,13 @@ class ServerLLM:
         # 將 Client 傳來的 Token ID 轉換回可讀的文字特徵
         # 由於 Client 也是 Qwen 家族，共用相似的詞表，這裡解碼能還原 SLM 提取的語意
         edge_semantic_features = self.tokenizer.decode(received_tokens[0], skip_special_tokens=True)
-        
+
+        print(f"\nServer 接收到的 SLM 特徵: '{edge_semantic_features}'")
+
         # 2. 構建 Server 端的 Prompt (融合邊緣端資訊)
         # 告訴 LLM 這些資訊是來自多個影像區塊的特徵，請它做 Final Decision
         system_prompt = "You are a powerful cloud server AI. Your task is to analyze semantic visual features extracted by edge devices and make a final comprehensive decision."
-        user_prompt = f"Based on the following visual features extracted from different patches of an image, provide a brief overall description of the scene:\n\n{edge_semantic_features}"
-        
+        user_prompt = f"Based on the following visual features extracted from different patches of an image, provide a concise, one-paragraph summary of the overall scene (maximum 3 sentences):\n\n{edge_semantic_features}"        
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
@@ -63,7 +64,7 @@ class ServerLLM:
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=128,  # Server 可以輸出較長的詳細決策
+                max_new_tokens=256,
                 temperature=0.7,     # 稍微增加一點生成多樣性
                 pad_token_id=self.tokenizer.pad_token_id
             )

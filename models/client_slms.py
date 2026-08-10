@@ -1,6 +1,6 @@
 import torch
 from PIL import Image
-from transformers import AutoProcessor, AutoModelForVision2Seq
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 
 class ClientMultiSLM:
     def __init__(self, model_name="Qwen/Qwen2-VL-2B-Instruct", device=None):
@@ -18,9 +18,8 @@ class ClientMultiSLM:
         self.processor = AutoProcessor.from_pretrained(model_name)
         
         # 2. 載入 VLM
-        # 使用 AutoModelForVision2Seq 會自動對應到 Qwen2VLForConditionalGeneration
         # torch_dtype=torch.bfloat16 可以大幅降低 Linux Server GPU 的 VRAM 佔用
-        self.model = AutoModelForVision2Seq.from_pretrained(
+        self.model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_name, 
             torch_dtype=torch.bfloat16,
             device_map=self.device # 讓 transformers 自動把模型放到指定裝置
@@ -50,12 +49,15 @@ class ClientMultiSLM:
                 
         return patches
 
-    def process_and_merge(self, image: Image.Image, prompt="Describe the key features of this image region briefly."):
-        """
-        模擬多個 SLM 處理各個 Patch，並將生成的 Token 進行合併。
-        """
+    def process_and_merge(self, image: Image.Image, prompt="Describe the key objects and background in this image region using one short, complete sentence."):
         patches = self._split_image_into_patches(image, grid_size=(2, 2))
         slm_output_tokens = []
+        patch_labels = ["左上 (Patch 1)", "右上 (Patch 2)", "左下 (Patch 3)", "右下 (Patch 4)"]
+        
+        # 取得一個換行符號的 Token ID，用來隔開每個 Patch 的特徵
+        # 這對 Server LLM 理解「這是 4 塊不同的區域」非常有幫助
+        newline_token_id = self.processor.tokenizer.encode("\n", add_special_tokens=False)
+        newline_tensor = torch.tensor([newline_token_id], device=self.device)
         
         for idx, patch in enumerate(patches):
             # Qwen2-VL 的官方建議輸入格式 (Chat Template)
@@ -87,17 +89,22 @@ class ClientMultiSLM:
                 # max_new_tokens 可依據實驗對 Transmission size 的限制進行調整
                 outputs = self.model.generate(
                     **inputs, 
-                    max_new_tokens=32,
+                    max_new_tokens=40,
                     pad_token_id=self.processor.tokenizer.pad_token_id
                 )
                 
                 # 裁切掉 input_ids，只保留生成的 output tokens
                 input_len = inputs["input_ids"].shape[1]
                 generated_tokens = outputs[0, input_len:] 
-                slm_output_tokens.append(generated_tokens)
                 
-        # 3. Token 合併 (Concatenate)
-        # 將所有 SLM_s 輸出的 1D token tensor 串接成一個長 sequence，準備進行 Token Transmission
+                # 把這個 Patch 的 Token 加進 list，並且在尾巴補上一個「換行 Token」
+                slm_output_tokens.append(generated_tokens)
+                slm_output_tokens.append(newline_tensor[0]) 
+                
+                patch_feature = self.processor.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                print(f"    - {patch_labels[idx]} 特徵: '{patch_feature.strip()}'")
+                
+        # 現在串接起來的 Tokens，中間就會自帶 \n 換行了！
         merged_tokens = torch.cat(slm_output_tokens, dim=0)
         
         # 增加 batch 維度 (1, seq_len)，以符合 Server 端 LLM 的 input 預期

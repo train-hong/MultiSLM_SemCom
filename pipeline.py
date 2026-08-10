@@ -32,16 +32,24 @@ class EndToEndEvaluator:
 
     def run(self):
         """執行端到端 (End-to-End) 的實驗流程"""
+        import itertools # 👉 [新增] 引入無限輪迴套件
         
-        for step, batch in enumerate(self.dataloader):
-            if step >= self.max_test_samples:
-                print(f"已達到設定的測試數量上限 ({self.max_test_samples} 張)，停止推論。")
-                break
+        # 👉 [修改] 把 dataloader 變成可以無限循環的 iterator
+        dataloader_iterator = itertools.cycle(self.dataloader)
+        
+        for step in range(self.max_test_samples):
+            # if step >= self.max_test_samples:
+            #     print(f"已達到設定的測試數量上限 ({self.max_test_samples} 張)，停止推論。")
+            #     break
+
+            batch = next(dataloader_iterator)
                 
             print(f"\n▶️ 正在處理第 {step + 1} 張圖片...")
             
             # 因為 batch_size=1，我們直接取出第一張 PIL Image
             image = batch["images"][0]
+
+            self.tracker.start("Total_Pipeline")
             
             # ---------------------------------------------------------
             # 1. Client 端運算 (SLM_s 處理與 Token 合併)
@@ -64,6 +72,8 @@ class EndToEndEvaluator:
             final_decision = self.server.generate_final_decision(received_tokens)
             self.tracker.stop("Server_Inference")
             
+            self.tracker.stop("Total_Pipeline")
+
             print(f"✅ Server Final Decision: {final_decision.strip()}")
             
         # 所有測試跑完後，印出平均 Latency 報告
