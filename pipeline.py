@@ -1,7 +1,7 @@
 import argparse
 import torch
+import itertools
 
-# 引入我們剛剛寫好的各個模組
 from data.imagenet_loader import ImageNetLoader
 from models.client_slms import ClientMultiSLM
 from models.server_llm import ServerLLM
@@ -9,53 +9,57 @@ from transmission.token_channel import TokenChannel
 from utils.latency_tracker import LatencyTracker
 
 class EndToEndEvaluator:
-    def __init__(self, data_dir: str, max_test_samples: int = 5):
+    def __init__(self, data_dir: str, batch_size: int = 1, num_runs: int = 3):
         """
-        初始化端雲協同實驗 Pipeline。
+        初始化端雲協同實驗 Pipeline (Batch Mode)。
         :param data_dir: 測試圖片所在的資料夾路徑
-        :param max_test_samples: 初期為了快速驗證，限制最多跑幾張圖
+        :param batch_size: 初始併發數量
+        :param num_runs: 每個 Batch Size 組合要重複跑幾次取平均
         """
-        # 決定硬體 (優先使用 CUDA)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"🚀 啟動 SemCom Pipeline，全域執行環境: {self.device}\n" + "-"*40)
+        print(f"🚀 啟動 SemCom Pipeline (Batch Mode)，全域執行環境: {self.device}\n" + "-"*40)
         
-        # 初始化時間追蹤器
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.num_runs = num_runs 
+        
         self.tracker = LatencyTracker(self.device)
-        self.max_test_samples = max_test_samples
         
         # 初始化四大模組
-        self.dataloader = ImageNetLoader(data_dir=data_dir, split="val").get_dataloader(batch_size=1)
+        # 依據初始 batch_size 建立 DataLoader
+        self.dataloader = ImageNetLoader(data_dir=data_dir, split="val").get_dataloader(batch_size=self.batch_size)
         self.client = ClientMultiSLM(device=self.device)
         self.channel = TokenChannel()
         self.server = ServerLLM(device=self.device)
         print("-" * 40 + "\n[Pipeline] 所有模組初始化完成，準備開始推論測試...")
 
+    def update_batch_size(self, new_batch_size: int):
+        """提供給 run_exp.py 使用：動態更新併發數量，並重建 DataLoader"""
+        self.batch_size = new_batch_size
+        # 重建 DataLoader 以符合新的 Batch Size
+        self.dataloader = ImageNetLoader(data_dir=self.data_dir, split="val").get_dataloader(batch_size=self.batch_size)
+
     def run(self):
-        """執行端到端 (End-to-End) 的實驗流程"""
-        import itertools # 👉 [新增] 引入無限輪迴套件
-        
-        # 👉 [修改] 把 dataloader 變成可以無限循環的 iterator
+        """執行批次 (Batched) 的端到端實驗流程"""
         dataloader_iterator = itertools.cycle(self.dataloader)
         
-        for step in range(self.max_test_samples):
-            # if step >= self.max_test_samples:
-            #     print(f"已達到設定的測試數量上限 ({self.max_test_samples} 張)，停止推論。")
-            #     break
-
+        # 跑 num_runs 次來取平均，確保時間數據穩定
+        for step in range(self.num_runs):
             batch = next(dataloader_iterator)
-                
-            print(f"\n▶️ 正在處理第 {step + 1} 張圖片...")
             
-            # 因為 batch_size=1，我們直接取出第一張 PIL Image
-            image = batch["images"][0]
+            # 💡 [關鍵改變] 這裡的 images 已經是一個 List[PIL.Image]，長度為 self.batch_size
+            images = batch["images"]
+            
+            print(f"\n▶️ 正在處理 Batch {step + 1}/{self.num_runs} (併發 {self.batch_size} 張圖片)...")
 
             self.tracker.start("Total_Pipeline")
             
             # ---------------------------------------------------------
-            # 1. Client 端運算 (SLM_s 處理與 Token 合併)
+            # 1. Client 端運算 (同時處理 N 張圖片)
             # ---------------------------------------------------------
             self.tracker.start("Client_Inference")
-            merged_tokens = self.client.process_and_merge(image)
+            # 呼叫新的 batch 處理函數
+            merged_tokens = self.client.process_and_merge_batch(images) 
             self.tracker.stop("Client_Inference")
             
             # ---------------------------------------------------------
@@ -66,35 +70,23 @@ class EndToEndEvaluator:
             self.tracker.stop("Transmission")
             
             # ---------------------------------------------------------
-            # 3. Server 端運算 (LLM 推導 Final Decision)
+            # 3. Server 端運算 (同時推導 N 份決策)
             # ---------------------------------------------------------
             self.tracker.start("Server_Inference")
-            final_decision = self.server.generate_final_decision(received_tokens)
+            # 呼叫新的 batch 處理函數
+            final_decisions = self.server.generate_final_decision_batch(received_tokens)
             self.tracker.stop("Server_Inference")
             
             self.tracker.stop("Total_Pipeline")
 
-            print(f"✅ Server Final Decision: {final_decision.strip()}")
-            
-        # 所有測試跑完後，印出平均 Latency 報告
         self.tracker.report_average()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Multi-SLM Semantic Communication Pipeline")
-    parser.add_argument(
-        "--data_dir", 
-        type=str, 
-        required=True, 
-        help="指向你的 ImageNet 資料夾，或自己建的 dummy_data 資料夾路徑"
-    )
-    parser.add_argument(
-        "--samples", 
-        type=int, 
-        default=3, 
-        help="要跑幾張圖片進行 Latency 測試 (預設 3 張)"
-    )
+    parser = argparse.ArgumentParser(description="Multi-SLM Semantic Communication Pipeline (Batch Mode)")
+    parser.add_argument("--data_dir", type=str, required=True)
+    parser.add_argument("--batch_size", type=int, default=1, help="併發圖片數量")
+    parser.add_argument("--runs", type=int, default=3, help="重複執行次數")
     args = parser.parse_args()
     
-    # 建立 Evaluator 並開始執行
-    evaluator = EndToEndEvaluator(data_dir=args.data_dir, max_test_samples=args.samples)
+    evaluator = EndToEndEvaluator(data_dir=args.data_dir, batch_size=args.batch_size, num_runs=args.runs)
     evaluator.run()

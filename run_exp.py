@@ -17,12 +17,13 @@ def run_all_experiments(data_dir):
     print("🚀 開始執行 ImageNet 自動化實驗...")
     print("-" * 50)
 
-    evaluator = EndToEndEvaluator(data_dir=data_dir, max_test_samples=1)
+    # evaluator = EndToEndEvaluator(data_dir=data_dir, max_test_samples=1)
+    evaluator = EndToEndEvaluator(data_dir=data_dir, batch_size=1, num_runs=3)
     
     for samples in test_cases:
         print(f"\n▶️ 正在測試 {samples} img...")
 
-        evaluator.max_test_samples = samples
+        evaluator.update_batch_size(samples)
         evaluator.tracker = LatencyTracker(evaluator.device)
         evaluator.run()
         

@@ -14,11 +14,14 @@ class ServerLLM:
             
         print(f"[Server] 初始化大型 LLM 模型 ({model_name})，使用裝置: {self.device}")
         
-        # 1. 載入 Tokenizer (用來解碼接收到的 Token 以及編碼 Server 的 Prompt)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         
-        # 2. 載入強大的 Server 端語言模型 (純 LLM)
-        # 7B 等級的模型在 Linux Server 上使用 bfloat16 非常重要，可避免 OOM
+        # ⚠️ [關鍵設定]：在進行 Batch Generation 時，Tokenizer 必須設定為左側補齊
+        # 這樣模型才能正確對齊所有 Prompt 的結尾，進行平行推論
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+            
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name, 
             torch_dtype=torch.bfloat16,
@@ -27,51 +30,61 @@ class ServerLLM:
         
         self.model.eval()
 
-    def generate_final_decision(self, received_tokens: torch.Tensor):
+    def generate_final_decision_batch(self, received_tokens: torch.Tensor):
         """
-        接收來自 Client 端傳輸的 Tokens，融合並推導出最終決策。
-        :param received_tokens: 形狀為 (1, seq_len) 的 Tensor
-        :return: string, 最終的推論結果
+        批次接收來自 Client 端傳輸的 Tokens，融合並推導出最終決策。
+        :param received_tokens: 形狀為 (batch_size, seq_len) 的 Tensor
+        :return: list of strings, 最終的推論結果列表
         """
-        # 1. 語意解碼 (Decoding transmitted symbols)
-        # 將 Client 傳來的 Token ID 轉換回可讀的文字特徵
-        # 由於 Client 也是 Qwen 家族，共用相似的詞表，這裡解碼能還原 SLM 提取的語意
-        edge_semantic_features = self.tokenizer.decode(received_tokens[0], skip_special_tokens=True)
-
-        print(f"\nServer 接收到的 SLM 特徵: '{edge_semantic_features}'")
-
-        # 2. 構建 Server 端的 Prompt (融合邊緣端資訊)
-        # 告訴 LLM 這些資訊是來自多個影像區塊的特徵，請它做 Final Decision
-        system_prompt = "You are a powerful cloud server AI. Your task is to analyze semantic visual features extracted by edge devices and make a final comprehensive decision."
-        user_prompt = f"Based on the following visual features extracted from different patches of an image, provide a concise, one-paragraph summary of the overall scene (maximum 3 sentences):\n\n{edge_semantic_features}"        
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
+        batch_size = received_tokens.shape[0]
+        texts_to_prompt = []
         
-        # 套用 Qwen2.5 的 Chat Template
-        text = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
+        # 1. 批次語意解碼 (Decoding transmitted symbols)
+        for i in range(batch_size):
+            # 取出該 Client 的 Token 序列
+            toks = received_tokens[i]
+            
+            # 過濾掉 Client 端因為對齊而產生的 Pad Token
+            valid_toks = toks[toks != self.tokenizer.pad_token_id]
+            edge_semantic_features = self.tokenizer.decode(valid_toks, skip_special_tokens=True)
+            
+            # 構建單一 Prompt
+            system_prompt = "You are a powerful cloud server AI. Your task is to analyze semantic visual features extracted by edge devices and make a final comprehensive decision."
+            user_prompt = f"Based on the following visual features extracted from different patches of an image, provide a concise, one-paragraph summary of the overall scene (maximum 3 sentences):\n\n{edge_semantic_features}"        
+            
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            
+            text = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            texts_to_prompt.append(text)
         
-        # 將 Server 的 Prompt 轉為模型輸入 Tensor
+        # 2. 將整批 Prompt 轉換為模型輸入 Tensor
         inputs = self.tokenizer(
-            text, 
+            texts_to_prompt, 
+            padding=True, 
             return_tensors="pt"
         ).to(self.device)
         
-        # 3. Server 端推論 (Heavy Computation)
+        # 3. 真正發揮 Server 算力的「平行推論」 (Heavy Computation)
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=256,
-                temperature=0.7,     # 稍微增加一點生成多樣性
+                temperature=0.7,
                 pad_token_id=self.tokenizer.pad_token_id
             )
             
-        # 4. 提取最終輸出
+        # 4. 批次提取與解碼最終輸出
         input_len = inputs["input_ids"].shape[1]
-        final_decision_tokens = outputs[0, input_len:]
-        final_decision_text = self.tokenizer.decode(final_decision_tokens, skip_special_tokens=True)
+        final_decisions = []
         
-        return final_decision_text
+        for i in range(batch_size):
+            generated_tokens = outputs[i, input_len:]
+            decision_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            final_decisions.append(decision_text.strip())
+            
+        return final_decisions
