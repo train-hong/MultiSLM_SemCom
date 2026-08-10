@@ -1,0 +1,27 @@
+# 虛擬環境
+.venv/
+venv/
+env/
+
+# Python 快取檔案
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 實驗資料集與測試圖片 (不要把 ImageNet 或 COCO 推上 Git)
+dummy_data/
+data_dir/
+*.jpg
+*.jpeg
+*.png
+
+# 模型權重與 Checkpoints (防爆容量)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# IDE 與系統檔案 (兼顧本地端 Mac 編輯與 Server 執行)
+.DS_Store
+.vscode/
+.idea/
