@@ -1,0 +1,7 @@
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.40.0
+accelerate>=0.28.0  
+
+# 影像處理與其他工具
+Pillow>=9.0.0
