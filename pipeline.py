@@ -50,6 +50,11 @@ class EndToEndEvaluator:
             # 💡 [關鍵改變] 這裡的 images 已經是一個 List[PIL.Image]，長度為 self.batch_size
             images = batch["images"]
             
+            # 強制將圖片數量複製擴充到指定的 batch_size
+            while len(images) < self.batch_size:
+                images.extend(batch["images"])
+            images = images[:self.batch_size] # 截斷多餘的，確保精準等於 batch_size
+
             print(f"\n▶️ 正在處理 Batch {step + 1}/{self.num_runs} (併發 {self.batch_size} 張圖片)...")
 
             self.tracker.start("Total_Pipeline")

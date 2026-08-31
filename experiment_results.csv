@@ -1,0 +1,6 @@
+,1 img,2 img,4 img,8 img,16 img,32 img,64 img
+Client Inference (ms),570.51,445.96,698.20,1109.62,2291.24,5129.72,OOM
+Server Inference (ms),1289.13,1375.01,1735.58,1921.65,2634.44,3523.94,OOM
+Inference (ms),1859.65,1820.97,2433.78,3031.27,4925.68,8653.66,OOM
+VIEScore,N/A,N/A,N/A,N/A,N/A,N/A,N/A
+Transmission (ms),0.01,0.02,0.01,0.01,0.02,0.02,OOM
